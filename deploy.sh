@@ -1,35 +1,19 @@
 #!/bin/sh
-# 文件名: deploy.sh
 
 PROJECT_DIR=/opt/bilibili-comment
 APP_DIR=$PROJECT_DIR/ceshi
-SCRIPT_DIR=$PROJECT_DIR/anzhuang
 
-IMAGE_NAME=bili-monitor
-CONTAINER_NAME=bili-monitor
+echo "开始部署 B站监控（无Docker版）..."
 
-echo "========== 1. 更新系统并安装 Docker =========="
 apk update
-apk add --no-cache git docker bash tzdata openrc
+apk add --no-cache git python3 py3-pip tzdata bash
 
-# Alpine 启动 Docker 的特有方式
-rc-update add docker default
-rc-service docker start || service docker start
+# 设置上海时区
+cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
-echo "========== 2. 准备目录并拉取最新代码 =========="
-mkdir -p $PROJECT_DIR
-mkdir -p $APP_DIR
-mkdir -p $SCRIPT_DIR
+mkdir -p $PROJECT_DIR $APP_DIR
 
-# 拉取或更新安装脚本所在仓库(anzhuang)
-if [ ! -d "$SCRIPT_DIR/.git" ]; then
-    git clone https://github.com/351950505/anzhuang.git $SCRIPT_DIR
-else
-    cd $SCRIPT_DIR
-    git pull
-fi
-
-# 拉取或更新项目本体仓库(ceshi)
+# 拉取/更新代码
 if [ ! -d "$APP_DIR/.git" ]; then
     git clone https://github.com/351950505/ceshi.git $APP_DIR
 else
@@ -37,31 +21,30 @@ else
     git pull
 fi
 
-echo "========== 3. 配置日志文件 =========="
-touch $APP_DIR/bili_monitor.log
-chmod 777 $APP_DIR/bili_monitor.log
+# 安装依赖（只装需要的，尽量省内存）
+cd $APP_DIR
+pip3 install --no-cache-dir requests pandas pytz
 
-echo "========== 4. 重新构建并运行 Docker =========="
-# 停止旧容器
-docker stop $CONTAINER_NAME 2>/dev/null
-docker rm $CONTAINER_NAME 2>/dev/null
+# 创建日志
+touch bili_monitor.log
+chmod 777 bili_monitor.log
 
-# 进入安装目录构建基础镜像
-cd $SCRIPT_DIR
-docker build -t $IMAGE_NAME .
+# 停止旧进程（如果有）
+pkill -f "python3.*main.py" 2>/dev/null
 
-# 运行容器，将 ceshi 文件夹挂载到容器的 /app 目录
-docker run -d \
---name $CONTAINER_NAME \
---restart always \
--v $APP_DIR:/app \
-$IMAGE_NAME
+# 以后台方式启动（使用 nohup + &）
+nohup python3 main.py >> bili_monitor.log 2>&1 &
 
-echo ""
-echo "部署完成！主程序已在 Docker 后台运行。"
-echo "日志查看命令："
-echo ""
-echo "tail -f /opt/bilibili-comment/ceshi/bili_monitor.log"
-echo "或者查看 Docker 日志："
-echo "docker logs -f $CONTAINER_NAME"
-echo ""
+# 或者更稳：加到开机自启（推荐）
+cat > /etc/local.d/bili-monitor.start <<EOF
+#!/bin/sh
+cd $APP_DIR
+nohup python3 main.py >> bili_monitor.log 2>&1 &
+EOF
+
+chmod +x /etc/local.d/bili-monitor.start
+rc-update add local default
+
+echo "部署完成"
+echo "日志查看：tail -f $APP_DIR/bili_monitor.log"
+echo "手动重启：pkill -f main.py && cd $APP_DIR && nohup python3 main.py >> bili_monitor.log 2>&1 &"
